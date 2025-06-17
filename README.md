@@ -1,3 +1,5 @@
+This repo is a fork of [turtlebot3](https://github.com/ROBOTIS-GIT/turtlebot3) by ROBOTIS. This `main` branch is kept in sync with the ROBOTIS repo. The `publish-analog-pins` branch extends the `turtlebot3_node` to broadcast the OpenCR analog pins data to a ROS 2 topic.
+
 # TurtleBot3
 <img src="https://raw.githubusercontent.com/ROBOTIS-GIT/emanual/master/assets/images/platform/turtlebot3/logo_turtlebot3.png" width="300">
 
