@@ -66,19 +66,40 @@ void TurtleBot3::init_dynamixel_sdk_wrapper(const std::string & usb_port)
 
   dxl_sdk_wrapper_ = std::make_shared<DynamixelSDKWrapper>(opencr);
 
+  // Add a small delay to ensure device is ready
+  rclcpp::sleep_for(std::chrono::milliseconds(100));
+
   // Initialize the main control table range (original range)
-  dxl_sdk_wrapper_->init_read_memory(
+  bool main_init_success = dxl_sdk_wrapper_->init_read_memory(
     extern_control_table.millis.addr,
     (extern_control_table.profile_acceleration_right.addr - extern_control_table.millis.addr) +
     extern_control_table.profile_acceleration_right.length
   );
+
+  if (!main_init_success) {
+    RCLCPP_ERROR(this->get_logger(), "Failed to initialize main control table range");
+    rclcpp::shutdown();
+    return;
+  }
+
+  // Add a small delay between initializations
+  rclcpp::sleep_for(std::chrono::milliseconds(50));
   
   // Add a separate initialization for the analog pins range
-  dxl_sdk_wrapper_->init_read_memory(
+  bool analog_init_success = dxl_sdk_wrapper_->init_read_memory(
     extern_control_table.analog_a0.addr,
     (extern_control_table.analog_a5.addr - extern_control_table.analog_a0.addr) +
     extern_control_table.analog_a5.length
   );
+
+  if (!analog_init_success) {
+    RCLCPP_ERROR(this->get_logger(), "Failed to initialize analog pins range");
+    rclcpp::shutdown();
+    return;
+  }
+
+  // Add a final delay to ensure all initializations are complete
+  rclcpp::sleep_for(std::chrono::milliseconds(100));
 }
 
 /**
@@ -94,25 +115,37 @@ void TurtleBot3::init_dynamixel_sdk_wrapper(const std::string & usb_port)
  */
 void TurtleBot3::check_device_status()
 {
+  // Add initial delay to ensure device is ready
+  rclcpp::sleep_for(std::chrono::milliseconds(200));
+
   // Check if device is connected and perform IMU gyroscope calibration
   if (dxl_sdk_wrapper_->is_connected_to_device()) {
     std::string sdk_msg;
     uint8_t reset = 1;
 
-    dxl_sdk_wrapper_->set_data_to_device(
+    bool calibration_success = dxl_sdk_wrapper_->set_data_to_device(
       extern_control_table.imu_re_calibration.addr,
       extern_control_table.imu_re_calibration.length,
       &reset,
       &sdk_msg);
 
-      RCLCPP_INFO(this->get_logger(), "Start Calibration of Gyro");
-      rclcpp::sleep_for(std::chrono::seconds(5));
-      RCLCPP_INFO(this->get_logger(), "Calibration End");
-    } else {
-      RCLCPP_ERROR(this->get_logger(), "Failed connection with Devices");
+    if (!calibration_success) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to initiate gyro calibration");
       rclcpp::shutdown();
       return;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Start Calibration of Gyro");
+    rclcpp::sleep_for(std::chrono::seconds(5));
+    RCLCPP_INFO(this->get_logger(), "Calibration End");
+  } else {
+    RCLCPP_ERROR(this->get_logger(), "Failed connection with Devices");
+    rclcpp::shutdown();
+    return;
   }
+
+  // Add delay after calibration
+  rclcpp::sleep_for(std::chrono::milliseconds(500));
 
   // Wait for device to be fully ready before checking status
   bool device_ready = false;
@@ -131,8 +164,13 @@ void TurtleBot3::check_device_status()
         rclcpp::sleep_for(std::chrono::seconds(retries+1));
         retries++;
       }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(this->get_logger(), "Failed to read device_ready flag: %s, retrying in %d seconds... (%d/%d)",
+                 e.what(), retries+1, retries+1, MAX_RETRIES);
+      rclcpp::sleep_for(std::chrono::seconds(retries+1));
+      retries++;
     } catch (...) {
-      RCLCPP_WARN(this->get_logger(), "Failed to read device_ready flag, retrying in %d seconds... (%d/%d)",
+      RCLCPP_WARN(this->get_logger(), "Unknown error reading device_ready flag, retrying in %d seconds... (%d/%d)",
                  retries+1, retries+1, MAX_RETRIES);
       rclcpp::sleep_for(std::chrono::seconds(retries+1));
       retries++;
@@ -142,19 +180,31 @@ void TurtleBot3::check_device_status()
   // Only check device_status if device is ready
   if (device_ready) {
     RCLCPP_INFO(this->get_logger(), "Device is ready, retrieving device status");
-    int8_t device_status = dxl_sdk_wrapper_->get_data_from_device<int8_t>(
-      extern_control_table.device_status.addr,
-      extern_control_table.device_status.length);
-      
-    // Check if motors are connected, retry after longer interval if not
-    const int8_t NOT_CONNECTED_MOTOR = -1;
-    if (device_status == NOT_CONNECTED_MOTOR) {
-      RCLCPP_INFO(this->get_logger(), "Motors not  initialized");
-    } else {
-      RCLCPP_INFO(this->get_logger(), "Motors successfully initialized");
+    try {
+      int8_t device_status = dxl_sdk_wrapper_->get_data_from_device<int8_t>(
+        extern_control_table.device_status.addr,
+        extern_control_table.device_status.length);
+        
+      // Check if motors are connected, retry after longer interval if not
+      const int8_t NOT_CONNECTED_MOTOR = -1;
+      if (device_status == NOT_CONNECTED_MOTOR) {
+        RCLCPP_INFO(this->get_logger(), "Motors not initialized");
+      } else {
+        RCLCPP_INFO(this->get_logger(), "Motors successfully initialized");
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to read device status: %s", e.what());
+      rclcpp::shutdown();
+      return;
+    } catch (...) {
+      RCLCPP_ERROR(this->get_logger(), "Unknown error reading device status");
+      rclcpp::shutdown();
+      return;
     }
   } else {
-    RCLCPP_WARN(this->get_logger(), "Device did not become ready in time, skipping device status check");
+    RCLCPP_ERROR(this->get_logger(), "Device did not become ready in time");
+    rclcpp::shutdown();
+    return;
   }
 }
 
